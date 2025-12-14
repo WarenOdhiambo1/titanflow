@@ -65,7 +65,9 @@ def scrape_smart(url):
     results = []
     
     try:
-        driver = uc.Chrome(options=options, version_main=137)
+        driver = uc.Chrome(options=options)
+        # driver = uc.Chrome(options=options, version_main=137)
+        
         
         if "jumia" in url:
             print(f"[*] TitanFlow: Scanning Jumia...")
