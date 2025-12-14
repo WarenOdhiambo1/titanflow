@@ -1,14 +1,21 @@
 import time
 import requests
 import os
+import google.generativeai as genai
 from scraper import scrape_smart
 
-# --- SECURE CONFIGURATION (LOADS FROM RENDER) ---
+# --- SECURE CONFIGURATION ---
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 CHAT_ID = os.environ.get("CHAT_ID")
-AIRTABLE_TOKEN = os.environ.get("AIRTABLE_TOKEN")
-BASE_ID = os.environ.get("BASE_ID")
-TABLE_NAME = "Sniper_Log"
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
+
+# --- CONFIGURE AI AGENT ---
+if GEMINI_API_KEY:
+    genai.configure(api_key=GEMINI_API_KEY)
+    model = genai.GenerativeModel('gemini-1.5-flash')
+else:
+    print("⚠️ WARNING: Gemini API Key missing. AI features disabled.")
+    model = None
 
 # --- SMART CATEGORY DEFINITIONS ---
 TARGETS = [
@@ -42,34 +49,47 @@ TARGETS = [
     }
 ]
 
-# Track sent items to avoid spamming duplicates
 SENT_CACHE = []
 
+# --- AI GENERATOR FUNCTION ---
+def generate_ai_update(topic="status"):
+    if not model: return None
+    
+    try:
+        if topic == "startup":
+            prompt = "Write a short, high-energy Telegram message announcing that 'TitanFlow Systems are Online'. Mention that we are scanning Jumia and Kilimall for price glitches. Use emojis. Keep it under 20 words."
+        elif topic == "pulse":
+            prompt = "Write a very short, professional 'Market Pulse' update for a deal-hunting channel. Say that scanning is active but no major price anomalies detected yet. Encourage patience. Use emojis (Scope, Robot, Green Circle). Keep it under 15 words."
+        
+        response = model.generate_content(prompt)
+        return response.text.strip()
+    except Exception as e:
+        print(f"AI Error: {e}")
+        return None
+
+# --- TELEGRAM SENDER ---
+def send_telegram_msg(message):
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+    try:
+        requests.post(url, json={"chat_id": CHAT_ID, "text": message, "parse_mode": "HTML"})
+    except Exception as e:
+        print(f"Telegram Error: {e}")
+
+# --- BUSINESS LOGIC ---
 def check_filters(product_name, category_rules):
     name_lower = product_name.lower()
-    
-    # 1. Check FORBIDDEN words (The "Block" List)
     for bad_word in category_rules['forbidden']:
-        if bad_word in name_lower:
-            return False # Reject: It's junk
+        if bad_word in name_lower: return False 
             
-    # 2. Check REQUIRED words (The "Must Have" List)
     has_required = False
     for good_word in category_rules['must_have']:
         if good_word in name_lower:
             has_required = True
             break
-    
-    if not has_required:
-        return False # Reject: It's vague or not a target brand
-        
-    return True # APPROVED
+    return has_required
 
 def send_marketing_alert(item):
-    """Sends the alert and adds to cache to prevent duplicates"""
-    if item['name'] in SENT_CACHE:
-        return
-        
+    if item['name'] in SENT_CACHE: return
     print(f"💎 PREMIUM FIND: {item['name']}")
     
     msg = (
@@ -80,49 +100,46 @@ def send_marketing_alert(item):
         f"⚡ <b>URGENCY:</b> High Demand!\n\n"
         f"<a href='{item['link']}'>👉 CLICK TO BUY IMMEDIATELY 👈</a>"
     )
-    
-    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-    try:
-        requests.post(url, json={"chat_id": CHAT_ID, "text": msg, "parse_mode": "HTML"})
-        SENT_CACHE.append(item['name']) # Remember we sent this
-    except Exception as e:
-        print(f"Error sending: {e}")
+    send_telegram_msg(msg)
+    SENT_CACHE.append(item['name']) 
 
-# --- THE ENGINE WRAPPER (Required for Main.py) ---
+# --- MAIN ENGINE ---
 def run_sniper_engine():
-    print("🚀 TITANFLOW: STRICT MODE ACTIVE (Background)...")
+    print("🚀 TITANFLOW: AI AGENT ACTIVE...")
     
-    # Check credentials
-    if not TELEGRAM_TOKEN or not CHAT_ID:
-        print("❌ ERROR: Secrets not found! Did you add them to Render Environment Variables?")
-        return
+    # 1. Send Startup Message (AI Generated)
+    startup_msg = generate_ai_update("startup")
+    if startup_msg: send_telegram_msg(f"<b>🤖 SYSTEM STATUS:</b>\n{startup_msg}")
+
+    loop_count = 0
 
     while True:
+        loop_count += 1
+        
+        # 2. Regular Scanning Loop
         for target in TARGETS:
             print(f"\n--- Scanning {target['name']} ---")
-            
-            # Calls the intelligent scraper we built earlier
             products = scrape_smart(target['url'])
-            print(f"[*] Analyzed {len(products)} items...")
             
             found = 0
             for p in products:
-                # 1. Price Check (Must be cheap, but not 0/Error)
                 if p['price'] > 50 and p['price'] <= target['trigger_price']:
-                    # 2. Strict Word Check (Is it a TV/Phone? Not a cable?)
                     if check_filters(p['name'], target):
                         send_marketing_alert(p)
                         found += 1
                         time.sleep(1) 
             
-            if found == 0:
-                print("   -> No items met strict criteria (Junk filtered).")
-                
             time.sleep(5)
 
-        # Clear cache every hour so we can alert again if stock returns
-        if len(SENT_CACHE) > 500:
-            SENT_CACHE.clear()
+        # 3. AI "Heartbeat" Message (Every 30 loops / approx 1 hour)
+        if loop_count % 30 == 0:
+            print("Creating AI Market Pulse...")
+            pulse_msg = generate_ai_update("pulse")
+            if pulse_msg: 
+                send_telegram_msg(f"<b>📡 MARKET PULSE:</b>\n{pulse_msg}")
+            
+            # Clear cache occasionally
+            if len(SENT_CACHE) > 500: SENT_CACHE.clear()
 
         print("\n💤 Cycle Complete...")
         time.sleep(120)
